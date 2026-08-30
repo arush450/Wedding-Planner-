@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Plus, Trash2, Users, Wallet, ListChecks, Heart, Phone, MapPin } from "lucide-react";
+import { Plus, Trash2, Users, Wallet, ListChecks, Heart, Phone, MapPin, Upload, ClipboardList } from "lucide-react";
+import * as XLSX from "xlsx";
 import { subscribeToPlanner, savePlanner } from "./firebase";
 
 const C = {
@@ -236,6 +237,10 @@ export default function App() {
 
 function GuestsTab({ data, update }) {
   const [form, setForm] = useState({ name: "", phone: "", location: "" });
+  const [importMsg, setImportMsg] = useState("");
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const fileInputRef = useRef(null);
 
   const addGuest = () => {
     if (!form.name.trim()) return;
@@ -244,15 +249,104 @@ function GuestsTab({ data, update }) {
   };
   const removeGuest = (id) => update((d) => ({ ...d, guests: d.guests.filter((g) => g.id !== id) }));
 
+  const handleImportExcel = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const workbook = XLSX.read(buf);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      const getVal = (row, keys) => {
+        for (const k of Object.keys(row)) {
+          if (keys.includes(k.trim().toLowerCase())) return String(row[k]).trim();
+        }
+        return "";
+      };
+
+      const newGuests = rows
+        .map((row) => ({
+          id: uid(),
+          name: getVal(row, ["name", "guest name", "guest"]),
+          phone: getVal(row, ["phone", "number", "phone number", "contact", "mobile"]),
+          location: getVal(row, ["location", "city", "address"]),
+        }))
+        .filter((g) => g.name);
+
+      if (newGuests.length === 0) {
+        setImportMsg("No guest names found — check the file has a \"Name\" column.");
+      } else {
+        update((d) => ({ ...d, guests: [...d.guests, ...newGuests] }));
+        setImportMsg(`Imported ${newGuests.length} guest${newGuests.length === 1 ? "" : "s"}.`);
+      }
+    } catch (err) {
+      console.error(err);
+      setImportMsg("Could not read that file — make sure it's a .xlsx or .csv file.");
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  const handlePasteImport = () => {
+    const lines = pasteText.split("\n").map((l) => l.trim()).filter(Boolean);
+    const newGuests = lines
+      .map((line) => {
+        const parts = line.split(/\t|,/).map((p) => p.trim());
+        return { id: uid(), name: parts[0] || "", phone: parts[1] || "", location: parts[2] || "" };
+      })
+      .filter((g) => g.name);
+
+    if (newGuests.length === 0) {
+      setImportMsg("Didn't find any names — put one guest per line, e.g. Name, Phone, Location.");
+    } else {
+      update((d) => ({ ...d, guests: [...d.guests, ...newGuests] }));
+      setImportMsg(`Added ${newGuests.length} guest${newGuests.length === 1 ? "" : "s"}.`);
+      setPasteText("");
+      setPasteOpen(false);
+    }
+  };
+
   return (
     <div>
       <SectionHeader eyebrow={`${data.guests.length} on the list`} title="Guest list" />
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20, background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
         <TextInput placeholder="Guest name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={{ flex: "1 1 160px" }} />
         <TextInput placeholder="Phone number" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} style={{ flex: "1 1 140px" }} />
         <TextInput placeholder="Location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} style={{ flex: "1 1 140px" }} />
         <Btn onClick={addGuest}><Plus size={14} /> Add</Btn>
       </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+        <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleImportExcel} style={{ display: "none" }} />
+        <Btn variant="ghost" style={{ color: C.ink, border: `1px solid ${C.border}`, background: C.cardBg }} onClick={() => fileInputRef.current?.click()}>
+          <Upload size={14} /> Import from Excel
+        </Btn>
+        <Btn variant="ghost" style={{ color: C.ink, border: `1px solid ${C.border}`, background: C.cardBg }} onClick={() => setPasteOpen((v) => !v)}>
+          <ClipboardList size={14} /> Paste a list
+        </Btn>
+        <span style={{ fontSize: 12, color: C.textMuted }}>Needs a "Name" column; "Phone" and "Location" are optional.</span>
+      </div>
+
+      {pasteOpen && (
+        <div style={{ background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, color: C.textMuted, marginBottom: 8 }}>
+            One guest per line. Separate Name, Phone, and Location with a comma — e.g. <code>Rahul Sharma, 9876543210, Mumbai</code>. Phone and location are optional.
+          </div>
+          <textarea
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            rows={6}
+            placeholder={"Rahul Sharma, 9876543210, Mumbai\nPriya Nair, 9123456789, Pune"}
+            style={{ width: "100%", fontFamily: FONT_MONO, fontSize: 13, padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, outline: "none", resize: "vertical", boxSizing: "border-box" }}
+          />
+          <div style={{ marginTop: 10 }}>
+            <Btn onClick={handlePasteImport}>Add these guests</Btn>
+          </div>
+        </div>
+      )}
+
+      {importMsg && <div style={{ fontSize: 12.5, color: C.sindoor, marginBottom: 14 }}>{importMsg}</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {data.guests.length === 0 && <div style={{ color: C.textMuted, fontSize: 14 }}>No guests added yet.</div>}
         {data.guests.map((g) => (
