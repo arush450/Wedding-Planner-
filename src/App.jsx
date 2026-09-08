@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Plus, Trash2, Users, Wallet, ListChecks, Heart, Phone, MapPin, Upload, ClipboardList } from "lucide-react";
+import { Plus, Trash2, Users, Wallet, ListChecks, Heart, Phone, MapPin, Upload, ClipboardList, Mail, Lock, Pencil } from "lucide-react";
 import * as XLSX from "xlsx";
+import confetti from "canvas-confetti";
 import { subscribeToPlanner, savePlanner } from "./firebase";
 
 const C = {
@@ -24,8 +25,9 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const defaultData = {
   eventDate: "",
   guests: [],
-  budget: { total: "", items: [] },
+  budget: { items: [] },
   tasks: [],
+  loveNotes: { arush: "", sayee: "" },
 };
 
 const COLUMNS = [
@@ -122,9 +124,8 @@ export default function App() {
 
   useEffect(() => {
     const unsub = subscribeToPlanner((remote) => {
-      // Skip applying our own just-saved state back over local edits mid-flight.
       if (!savingRef.current) {
-        setData(remote ? { ...defaultData, ...remote } : defaultData);
+        setData(remote ? { ...defaultData, ...remote, budget: { items: [], ...remote.budget }, loveNotes: { arush: "", sayee: "", ...remote.loveNotes } } : defaultData);
       }
       setLoading(false);
     });
@@ -152,12 +153,18 @@ export default function App() {
     });
   };
 
-  const guestStats = useMemo(() => ({ total: data.guests.length }), [data.guests]);
+  const guestStats = useMemo(() => {
+    const families = data.guests.length;
+    const totalHeadcount = data.guests.reduce((s, g) => s + (Number(g.partySize) || 1), 0);
+    const confirmedHeadcount = data.guests.filter((g) => g.rsvp === "Yes").reduce((s, g) => s + (Number(g.partySize) || 1), 0);
+    const declinedFamilies = data.guests.filter((g) => g.rsvp === "No").length;
+    const pendingFamilies = data.guests.filter((g) => g.rsvp !== "Yes" && g.rsvp !== "No").length;
+    return { families, totalHeadcount, confirmedHeadcount, declinedFamilies, pendingFamilies };
+  }, [data.guests]);
 
   const budgetStats = useMemo(() => {
-    const total = parseFloat(data.budget.total) || 0;
     const spent = data.budget.items.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0);
-    return { total, spent, remaining: total - spent };
+    return { spent };
   }, [data.budget]);
 
   const taskStats = useMemo(() => {
@@ -171,13 +178,15 @@ export default function App() {
     return Math.ceil((new Date(data.eventDate) - new Date()) / 86400000);
   }, [data.eventDate]);
 
+  const isMarried = daysToGo !== null && daysToGo < 0;
+
   const overallFraction = useMemo(() => {
     const parts = [];
-    if (budgetStats.total) parts.push(Math.min(budgetStats.spent / budgetStats.total, 1));
+    if (guestStats.totalHeadcount) parts.push(guestStats.confirmedHeadcount / guestStats.totalHeadcount);
     if (taskStats.total) parts.push(taskStats.done / taskStats.total);
     if (!parts.length) return 0;
     return parts.reduce((a, b) => a + b, 0) / parts.length;
-  }, [budgetStats, taskStats]);
+  }, [guestStats, taskStats]);
 
   if (loading) {
     return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT_BODY, color: C.textMuted, background: C.ivory }}>Loading your planner…</div>;
@@ -185,9 +194,10 @@ export default function App() {
 
   const tabs = [
     { id: "overview", label: "Overview", icon: Heart },
+    { id: "tasks", label: "Tasks", icon: ListChecks },
     { id: "guests", label: "Guests", icon: Users },
     { id: "budget", label: "Budget", icon: Wallet },
-    { id: "tasks", label: "Tasks", icon: ListChecks },
+    { id: "notes", label: "Love Notes", icon: Mail },
   ];
 
   return (
@@ -195,10 +205,14 @@ export default function App() {
       <div style={{ maxWidth: 880, margin: "0 auto", padding: "40px 20px 80px" }}>
         <div style={{ textAlign: "center", marginBottom: 8 }}>
           <div style={{ fontFamily: FONT_DISPLAY, fontStyle: "italic", fontSize: 13, letterSpacing: "0.12em", textTransform: "uppercase", color: C.marigold, marginBottom: 6 }}>Arush &amp; Sayee</div>
-          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 40, color: C.ink, marginBottom: 10 }}>The Engagement Planner</div>
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 40, color: C.ink, marginBottom: 10 }}>{isMarried ? "Married!" : "The Engagement Planner"}</div>
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
             <input type="date" value={data.eventDate} onChange={(e) => update((d) => ({ ...d, eventDate: e.target.value }))} style={{ fontFamily: FONT_MONO, fontSize: 13, padding: "6px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "#fff", color: C.text }} />
-            {daysToGo !== null && <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: C.sindoor }}>{daysToGo >= 0 ? `${daysToGo} days to go` : `${Math.abs(daysToGo)} days ago`}</span>}
+            {daysToGo !== null && (
+              <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: C.sindoor }}>
+                {isMarried ? `${Math.abs(daysToGo)} days married 💍` : `${daysToGo} days to go`}
+              </span>
+            )}
           </div>
         </div>
         <GarlandBar fraction={overallFraction} count={24} size={9} />
@@ -220,23 +234,24 @@ export default function App() {
           <div>
             <SectionHeader eyebrow="At a glance" title="How things stand" />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
-              <StatCard icon={Users} label="Guests" value={guestStats.total} sub="on the list" fraction={guestStats.total ? 1 : 0} />
-              <StatCard icon={Wallet} label="Budget" value={budgetStats.total ? `₹${budgetStats.spent.toLocaleString("en-IN")}` : "—"} sub={budgetStats.total ? `of ₹${budgetStats.total.toLocaleString("en-IN")} spent` : "set a total in Budget"} fraction={budgetStats.total ? budgetStats.spent / budgetStats.total : 0} />
+              <StatCard icon={Users} label="Guests" value={`${guestStats.confirmedHeadcount}/${guestStats.totalHeadcount || 0}`} sub={`${guestStats.pendingFamilies} families pending · ${guestStats.declinedFamilies} declined`} fraction={guestStats.totalHeadcount ? guestStats.confirmedHeadcount / guestStats.totalHeadcount : 0} />
+              <StatCard icon={Wallet} label="Spent so far" value={`₹${budgetStats.spent.toLocaleString("en-IN")}`} sub={`${data.budget.items.length} expense${data.budget.items.length === 1 ? "" : "s"} logged`} fraction={data.budget.items.length ? 1 : 0} />
               <StatCard icon={ListChecks} label="Tasks" value={`${taskStats.done}/${taskStats.total || 0}`} sub="done" fraction={taskStats.total ? taskStats.done / taskStats.total : 0} />
             </div>
           </div>
         )}
 
-        {tab === "guests" && <GuestsTab data={data} update={update} />}
-        {tab === "budget" && <BudgetTab data={data} update={update} stats={budgetStats} />}
         {tab === "tasks" && <TasksTab data={data} update={update} />}
+        {tab === "guests" && <GuestsTab data={data} update={update} guestStats={guestStats} />}
+        {tab === "budget" && <BudgetTab data={data} update={update} stats={budgetStats} />}
+        {tab === "notes" && <LoveNotesTab data={data} update={update} isMarried={isMarried} />}
       </div>
     </div>
   );
 }
 
-function GuestsTab({ data, update }) {
-  const [form, setForm] = useState({ name: "", phone: "", location: "" });
+function GuestsTab({ data, update, guestStats }) {
+  const [form, setForm] = useState({ name: "", phone: "", location: "", partySize: 1 });
   const [importMsg, setImportMsg] = useState("");
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
@@ -244,10 +259,11 @@ function GuestsTab({ data, update }) {
 
   const addGuest = () => {
     if (!form.name.trim()) return;
-    update((d) => ({ ...d, guests: [...d.guests, { id: uid(), ...form }] }));
-    setForm({ name: "", phone: "", location: "" });
+    update((d) => ({ ...d, guests: [...d.guests, { id: uid(), ...form, partySize: Number(form.partySize) || 1, rsvp: "Pending" }] }));
+    setForm({ name: "", phone: "", location: "", partySize: 1 });
   };
   const removeGuest = (id) => update((d) => ({ ...d, guests: d.guests.filter((g) => g.id !== id) }));
+  const setRsvp = (id, rsvp) => update((d) => ({ ...d, guests: d.guests.map((g) => (g.id === id ? { ...g, rsvp } : g)) }));
 
   const handleImportExcel = async (e) => {
     const file = e.target.files[0];
@@ -266,12 +282,18 @@ function GuestsTab({ data, update }) {
       };
 
       const newGuests = rows
-        .map((row) => ({
-          id: uid(),
-          name: getVal(row, ["name", "guest name", "guest"]),
-          phone: getVal(row, ["phone", "number", "phone number", "contact", "mobile"]),
-          location: getVal(row, ["location", "city", "address"]),
-        }))
+        .map((row) => {
+          const partyRaw = getVal(row, ["party size", "partysize", "guests", "count", "no. of guests", "pax", "total"]);
+          const partySize = Math.max(1, parseInt(partyRaw, 10) || 1);
+          return {
+            id: uid(),
+            rsvp: "Pending",
+            name: getVal(row, ["name", "guest name", "guest"]),
+            phone: getVal(row, ["phone", "number", "phone number", "contact", "mobile"]),
+            location: getVal(row, ["location", "city", "address"]),
+            partySize,
+          };
+        })
         .filter((g) => g.name);
 
       if (newGuests.length === 0) {
@@ -293,12 +315,13 @@ function GuestsTab({ data, update }) {
     const newGuests = lines
       .map((line) => {
         const parts = line.split(/\t|,/).map((p) => p.trim());
-        return { id: uid(), name: parts[0] || "", phone: parts[1] || "", location: parts[2] || "" };
+        const partySize = Math.max(1, parseInt(parts[3], 10) || 1);
+        return { id: uid(), name: parts[0] || "", phone: parts[1] || "", location: parts[2] || "", partySize, rsvp: "Pending" };
       })
       .filter((g) => g.name);
 
     if (newGuests.length === 0) {
-      setImportMsg("Didn't find any names — put one guest per line, e.g. Name, Phone, Location.");
+      setImportMsg("Didn't find any names — put one guest per line, e.g. Name, Phone, Location, Party size.");
     } else {
       update((d) => ({ ...d, guests: [...d.guests, ...newGuests] }));
       setImportMsg(`Added ${newGuests.length} guest${newGuests.length === 1 ? "" : "s"}.`);
@@ -309,11 +332,12 @@ function GuestsTab({ data, update }) {
 
   return (
     <div>
-      <SectionHeader eyebrow={`${data.guests.length} on the list`} title="Guest list" />
+      <SectionHeader eyebrow={`${guestStats.families} families · ${guestStats.totalHeadcount} people total`} title="Guest list" />
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
         <TextInput placeholder="Guest name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={{ flex: "1 1 160px" }} />
         <TextInput placeholder="Phone number" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} style={{ flex: "1 1 140px" }} />
         <TextInput placeholder="Location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} style={{ flex: "1 1 140px" }} />
+        <TextInput type="number" min="1" placeholder="Total people" value={form.partySize} onChange={(e) => setForm({ ...form, partySize: e.target.value })} style={{ width: 110 }} />
         <Btn onClick={addGuest}><Plus size={14} /> Add</Btn>
       </div>
 
@@ -325,19 +349,19 @@ function GuestsTab({ data, update }) {
         <Btn variant="ghost" style={{ color: C.ink, border: `1px solid ${C.border}`, background: C.cardBg }} onClick={() => setPasteOpen((v) => !v)}>
           <ClipboardList size={14} /> Paste a list
         </Btn>
-        <span style={{ fontSize: 12, color: C.textMuted }}>Needs a "Name" column; "Phone" and "Location" are optional.</span>
       </div>
+      <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 12 }}>"Total people" is the whole family/group under that name (include the guest themselves). Excel/paste can include this as a column too — defaults to 1 if left out.</div>
 
       {pasteOpen && (
         <div style={{ background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
           <div style={{ fontSize: 12.5, color: C.textMuted, marginBottom: 8 }}>
-            One guest per line. Separate Name, Phone, and Location with a comma — e.g. <code>Rahul Sharma, 9876543210, Mumbai</code>. Phone and location are optional.
+            One guest per line: Name, Phone, Location, Total people — e.g. <code>Rahul Sharma, 9876543210, Mumbai, 4</code>. Only Name is required.
           </div>
           <textarea
             value={pasteText}
             onChange={(e) => setPasteText(e.target.value)}
             rows={6}
-            placeholder={"Rahul Sharma, 9876543210, Mumbai\nPriya Nair, 9123456789, Pune"}
+            placeholder={"Rahul Sharma, 9876543210, Mumbai, 4\nPriya Nair, 9123456789, Pune, 1"}
             style={{ width: "100%", fontFamily: FONT_MONO, fontSize: 13, padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, outline: "none", resize: "vertical", boxSizing: "border-box" }}
           />
           <div style={{ marginTop: 10 }}>
@@ -351,10 +375,15 @@ function GuestsTab({ data, update }) {
         {data.guests.length === 0 && <div style={{ color: C.textMuted, fontSize: 14 }}>No guests added yet.</div>}
         {data.guests.map((g) => (
           <div key={g.id} style={{ background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{g.name}</div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{g.name} <span style={{ color: C.marigold, fontWeight: 700 }}>· {g.partySize || 1} total</span></div>
             <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 12.5, color: C.textMuted }}>
               {g.phone && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Phone size={13} /> {g.phone}</span>}
               {g.location && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><MapPin size={13} /> {g.location}</span>}
+              <Select value={g.rsvp || "Pending"} onChange={(e) => setRsvp(g.id, e.target.value)} style={{ padding: "6px 10px", fontSize: 12.5, color: g.rsvp === "Yes" ? C.sage : g.rsvp === "No" ? C.sindoor : C.textMuted }}>
+                <option>Pending</option>
+                <option>Yes</option>
+                <option>No</option>
+              </Select>
               <Btn variant="ghost" onClick={() => removeGuest(g.id)}><Trash2 size={15} /></Btn>
             </div>
           </div>
@@ -373,16 +402,10 @@ function BudgetTab({ data, update, stats }) {
     setForm({ expense: "", spentOn: "", amount: "", spentBy: "Arush" });
   };
   const removeItem = (id) => update((d) => ({ ...d, budget: { ...d.budget, items: d.budget.items.filter((i) => i.id !== id) } }));
-  const setTotal = (val) => update((d) => ({ ...d, budget: { ...d.budget, total: val } }));
 
   return (
     <div>
-      <SectionHeader eyebrow="Money matters" title="Budget & expenses" />
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-        <span style={{ fontSize: 13, color: C.textMuted }}>Total budget (₹)</span>
-        <TextInput type="number" value={data.budget.total} onChange={(e) => setTotal(e.target.value)} style={{ width: 140 }} />
-        <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: stats.remaining < 0 ? C.sindoor : C.sage }}>{stats.total ? `₹${stats.remaining.toLocaleString("en-IN")} remaining` : ""}</span>
-      </div>
+      <SectionHeader eyebrow={`₹${stats.spent.toLocaleString("en-IN")} logged so far`} title="Expenses" />
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20, background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
         <TextInput placeholder="Expense" value={form.expense} onChange={(e) => setForm({ ...form, expense: e.target.value })} style={{ flex: "1 1 140px" }} />
@@ -414,7 +437,32 @@ function BudgetTab({ data, update, stats }) {
   );
 }
 
-function TaskCard({ task, onDragStart, onRemove }) {
+function TaskNotes({ task, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(task.notes || "");
+
+  if (editing) {
+    return (
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => { setEditing(false); onSave(text); }}
+        rows={2}
+        style={{ width: "100%", fontFamily: FONT_BODY, fontSize: 12, padding: 6, borderRadius: 6, border: `1px solid ${C.border}`, outline: "none", resize: "vertical", boxSizing: "border-box", marginTop: 6 }}
+      />
+    );
+  }
+
+  return (
+    <div onClick={() => setEditing(true)} style={{ marginTop: 6, fontSize: 12, color: task.notes ? C.text : C.textMuted, cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 4 }}>
+      <Pencil size={11} style={{ marginTop: 2, flexShrink: 0 }} />
+      <span>{task.notes || "Add a note…"}</span>
+    </div>
+  );
+}
+
+function TaskCard({ task, onDragStart, onRemove, onSaveNotes }) {
   const overdue = task.due && task.status !== "done" && new Date(task.due) < new Date(new Date().toDateString());
   return (
     <div draggable onDragStart={(e) => onDragStart(e, task.id)} style={{ background: C.cardBg, border: `1px solid ${overdue ? C.sindoor : C.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8, cursor: "grab" }}>
@@ -423,6 +471,7 @@ function TaskCard({ task, onDragStart, onRemove }) {
         <span>{task.assignee}</span>
         <span>{task.due || ""}{overdue ? " · overdue" : ""}</span>
       </div>
+      <TaskNotes task={task} onSave={(text) => onSaveNotes(task.id, text)} />
       <div style={{ textAlign: "right", marginTop: 4 }}>
         <Btn variant="ghost" onClick={() => onRemove(task.id)} style={{ padding: 2 }}><Trash2 size={13} /></Btn>
       </div>
@@ -435,11 +484,22 @@ function TasksTab({ data, update }) {
 
   const addTask = () => {
     if (!form.title.trim()) return;
-    update((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), ...form, status: "todo" }] }));
+    update((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), ...form, notes: "", status: "todo" }] }));
     setForm({ title: "", assignee: "Both", due: "" });
   };
   const removeTask = (id) => update((d) => ({ ...d, tasks: d.tasks.filter((t) => t.id !== id) }));
-  const moveTask = (id, status) => update((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, status } : t)) }));
+
+  const moveTask = (id, status) => {
+    update((d) => {
+      const target = d.tasks.find((t) => t.id === id);
+      if (target && target.status !== "done" && status === "done") {
+        confetti({ particleCount: 90, spread: 75, origin: { y: 0.6 }, colors: ["#E8A33D", "#1F3D3D", "#B23A48", "#8A9A7E"] });
+      }
+      return { ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, status } : t)) };
+    });
+  };
+
+  const saveNotes = (id, notes) => update((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, notes } : t)) }));
 
   const onDragStart = (e, id) => e.dataTransfer.setData("text/plain", id);
   const onDrop = (e, status) => {
@@ -469,12 +529,86 @@ function TasksTab({ data, update }) {
               {col.label} · {data.tasks.filter((t) => t.status === col.id).length}
             </div>
             {data.tasks.filter((t) => t.status === col.id).map((t) => (
-              <TaskCard key={t.id} task={t} onDragStart={onDragStart} onRemove={removeTask} />
+              <TaskCard key={t.id} task={t} onDragStart={onDragStart} onRemove={removeTask} onSaveNotes={saveNotes} />
             ))}
           </div>
         ))}
       </div>
-      <div style={{ fontSize: 11.5, color: C.textMuted, marginTop: 10 }}>Drag a card between columns to update its status.</div>
+      <div style={{ fontSize: 11.5, color: C.textMuted, marginTop: 10 }}>Drag a card between columns to update its status. Click a card's note line to edit it.</div>
+    </div>
+  );
+}
+
+function LoveNotesTab({ data, update, isMarried }) {
+  const [me, setMe] = useState(() => localStorage.getItem("planner_identity") || "");
+  const [draft, setDraft] = useState("");
+
+  useEffect(() => {
+    if (me) setDraft(data.loveNotes?.[me] || "");
+  }, [me, data.loveNotes]);
+
+  const chooseIdentity = (who) => {
+    localStorage.setItem("planner_identity", who);
+    setMe(who);
+  };
+
+  const saveNote = () => {
+    update((d) => ({ ...d, loveNotes: { ...d.loveNotes, [me]: draft } }));
+  };
+
+  const other = me === "arush" ? "sayee" : "arush";
+  const otherLabel = other === "arush" ? "Arush" : "Sayee";
+  const myLabel = me === "arush" ? "Arush" : "Sayee";
+
+  if (!me) {
+    return (
+      <div>
+        <SectionHeader eyebrow="A little surprise" title="Time-locked love notes" />
+        <div style={{ color: C.textMuted, fontSize: 14, marginBottom: 16 }}>
+          Write a private note now — it stays sealed until your wedding date arrives. Who's reading this?
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn onClick={() => chooseIdentity("arush")}>I'm Arush</Btn>
+          <Btn onClick={() => chooseIdentity("sayee")}>I'm Sayee</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <SectionHeader eyebrow="A little surprise" title="Time-locked love notes" />
+
+      <div style={{ background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Your note, {myLabel}</div>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={saveNote}
+          rows={5}
+          placeholder="Write something for your partner to read on your wedding day…"
+          style={{ width: "100%", fontFamily: FONT_BODY, fontSize: 14, padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, outline: "none", resize: "vertical", boxSizing: "border-box" }}
+        />
+      </div>
+
+      <div style={{ background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>{otherLabel}'s note to you</div>
+        {isMarried ? (
+          data.loveNotes?.[other] ? (
+            <div style={{ fontSize: 14.5, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{data.loveNotes[other]}</div>
+          ) : (
+            <div style={{ color: C.textMuted, fontSize: 13.5 }}>{otherLabel} hasn't written one yet.</div>
+          )
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.textMuted, fontSize: 13.5 }}>
+            <Lock size={14} /> Sealed until your wedding day
+          </div>
+        )}
+      </div>
+
+      <button onClick={() => { localStorage.removeItem("planner_identity"); setMe(""); }} style={{ marginTop: 14, background: "none", border: "none", color: C.textMuted, fontSize: 12, cursor: "pointer" }}>
+        Not {myLabel}? Switch
+      </button>
     </div>
   );
 }
